@@ -1,3 +1,7 @@
+⚠️ Note:
+This project is currently under development.
+Some modules may produce errors. Improvements are ongoing.
+
 # 🛡️ AI Network Security Guard
 
 An AI-powered network security system that uses **Anomaly Detection** to catch Zero-Day attacks and unknown threats in real-time.
