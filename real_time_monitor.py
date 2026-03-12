@@ -4,6 +4,8 @@ Monitors live traffic and detects attacks instantly with AI, firewall, and alert
 """
 import warnings
 warnings.filterwarnings("ignore")
+import os
+os.environ['PYTHONWARNINGS'] = 'ignore'
 import sys
 import logging
 import asyncio
