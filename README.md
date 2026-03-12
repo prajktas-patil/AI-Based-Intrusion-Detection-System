@@ -1,6 +1,4 @@
-⚠️ Note:
-This project is currently under development.
-Some modules may produce errors. Improvements are ongoing.
+
 
 # 🛡️ AI Network Security Guard
 
@@ -346,7 +344,6 @@ Want to make it even better? Consider:
 - **Deep Learning**: Use LSTM/Autoencoders for sequence analysis
 - **Multi-stage Detection**: Combine with signature-based detection
 - **Automatic Response**: Block suspicious IPs automatically
-- **Cloud Integration**: Send alerts to Slack/email
 - **Historical Analysis**: Store and analyze long-term patterns
 
 ---
