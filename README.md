@@ -370,5 +370,5 @@ You now have an AI-powered security guard watching your network 24/7, catching t
 
 **Next Steps:**
 1. Train the model: `python train_model.py`
-2. Start monitoring: `streamlit run dashboard.py`
+2. Start monitoring: `streamlit run dashboard_realtime.py`
 3. Watch the alerts roll in! 🛡️
