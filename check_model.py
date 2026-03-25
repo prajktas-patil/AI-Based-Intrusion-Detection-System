@@ -1,5 +1,5 @@
 """
-Check if AI model is working correctly
+Check if AI model is working correctly or not
 """
 
 import pickle
