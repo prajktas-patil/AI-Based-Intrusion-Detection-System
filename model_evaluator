@@ -1,0 +1,205 @@
+"""
+model_evaluator.py  –  Evaluate the trained IsolationForest on a labelled test set.
+
+Usage:
+    python model_evaluator.py
+    python model_evaluator.py --dataset /path/to/CICIDS.csv
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+import numpy as np
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
+
+from detector import DetectorService
+from models import NetworkEvent
+
+
+# ─── synthetic labelled test set ────────────────────────────────────────────
+
+def build_synthetic_test_set() -> tuple[list[NetworkEvent], np.ndarray]:
+    rng = np.random.default_rng(seed=99)
+    events: list[NetworkEvent] = []
+    labels: list[int] = []
+
+    # Normal traffic (label 0)
+    for _ in range(300):
+        events.append(NetworkEvent(
+            src_ip         = f"192.168.1.{rng.integers(2, 250)}",
+            dst_ip         = "192.168.1.1",
+            protocol       = str(rng.choice(["TCP", "UDP"])),
+            src_port       = int(rng.integers(1024, 65535)),
+            dst_port       = int(rng.choice([80, 443, 53, 123, 587])),
+            bytes_sent     = int(rng.integers(64, 3000)),
+            bytes_received = int(rng.integers(64, 6000)),
+            duration_ms    = int(rng.integers(10, 800)),
+            packet_count   = int(rng.integers(1, 25)),
+        ))
+        labels.append(0)
+
+    # Brute-force (label 1)
+    for _ in range(50):
+        events.append(NetworkEvent(
+            src_ip="203.0.113.55", dst_ip="192.168.1.10",
+            protocol="TCP",
+            src_port=int(rng.integers(40000, 65535)),
+            dst_port=int(rng.choice([22, 3389])),
+            bytes_sent=int(rng.integers(200, 900)),
+            bytes_received=int(rng.integers(50, 200)),
+            duration_ms=int(rng.integers(80, 500)),
+            packet_count=int(rng.integers(25, 100)),
+        ))
+        labels.append(1)
+
+    # DDoS (label 1)
+    for _ in range(40):
+        events.append(NetworkEvent(
+            src_ip=f"198.51.100.{rng.integers(1, 254)}",
+            dst_ip="192.168.1.10",
+            protocol="TCP",
+            src_port=int(rng.integers(1024, 65535)),
+            dst_port=80,
+            bytes_sent=int(rng.integers(20000, 70000)),
+            bytes_received=int(rng.integers(50, 300)),
+            duration_ms=int(rng.integers(500, 4000)),
+            packet_count=int(rng.integers(300, 1000)),
+        ))
+        labels.append(1)
+
+    # Data exfiltration (label 1)
+    for _ in range(30):
+        events.append(NetworkEvent(
+            src_ip=f"10.0.0.{rng.integers(2, 50)}",
+            dst_ip=f"203.0.113.{rng.integers(100, 200)}",
+            protocol="TCP",
+            src_port=int(rng.integers(1024, 65535)),
+            dst_port=443,
+            bytes_sent=int(rng.integers(100_000, 500_000)),
+            bytes_received=int(rng.integers(100, 600)),
+            duration_ms=int(rng.integers(5000, 30000)),
+            packet_count=int(rng.integers(60, 200)),
+        ))
+        labels.append(1)
+
+    return events, np.array(labels, dtype=int)
+
+
+# ─── CSV-based test set (Kaggle) ─────────────────────────────────────────────
+
+def build_kaggle_test_set(csv_path: str) -> tuple[list[NetworkEvent], np.ndarray]:
+    import pandas as pd
+    from trainer import _first_existing
+
+    df = pd.read_csv(csv_path, low_memory=False)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    label_col = next(
+        (c for c in df.columns if c.strip().lower() in {"label", "class", "attack_cat"}),
+        None,
+    )
+    if not label_col:
+        raise ValueError("No label column found in CSV (expected 'label', 'class', or 'attack_cat').")
+
+    # Sample for speed
+    df = df.sample(min(len(df), 20_000), random_state=42)
+
+    y_raw   = df[label_col].astype(str).str.strip().str.lower()
+    y_label = (y_raw.isin({"benign", "normal", "0"}) == False).astype(int)  # 1=attack, 0=benign
+
+    from trainer import _first_existing
+    duration      = _first_existing(df, ["Flow Duration", "Duration", "dur"])
+    duration_ms   = (duration / 1000.0).clip(1, 3_600_000)
+    bytes_sent    = _first_existing(df, ["Total Length of Fwd Packets", "TotLen Fwd Pkts", "bytes_sent", "Src Bytes"]).clip(0)
+    bytes_recv    = _first_existing(df, ["Total Length of Bwd Packets", "TotLen Bwd Pkts", "bytes_received", "Dst Bytes"]).clip(0)
+    fwd_pkts      = _first_existing(df, ["Total Fwd Packets", "Tot Fwd Pkts"], 0.0)
+    bwd_pkts      = _first_existing(df, ["Total Backward Packets", "Tot Bwd Pkts"], 0.0)
+    packet_count  = (fwd_pkts + bwd_pkts).clip(1)
+    src_port      = _first_existing(df, ["Source Port", "Src Port", "src_port"], 0.0).clip(0, 65535)
+    dst_port      = _first_existing(df, ["Destination Port", "Dst Port", "dst_port"], 0.0).clip(0, 65535)
+
+    events = []
+    for i in range(len(df)):
+        events.append(NetworkEvent(
+            src_ip         = "0.0.0.0",
+            dst_ip         = "0.0.0.0",
+            protocol       = "TCP",
+            src_port       = int(src_port.iloc[i]),
+            dst_port       = int(dst_port.iloc[i]),
+            bytes_sent     = int(bytes_sent.iloc[i]),
+            bytes_received = int(bytes_recv.iloc[i]),
+            duration_ms    = int(duration_ms.iloc[i]),
+            packet_count   = int(packet_count.iloc[i]),
+        ))
+
+    return events, y_label.values
+
+
+# ─── main evaluation ──────────────────────────────────────────────────────────
+
+def evaluate(csv_path: str | None = None) -> None:
+    detector = DetectorService()
+    detector.load()
+
+    print("\n" + "=" * 60)
+    print("  SentinelMesh – Model Evaluation Report")
+    print(f"  Model source : {detector.model_source}")
+    print("=" * 60)
+
+    if csv_path:
+        print(f"\n  Loading test set from: {csv_path}")
+        events, y_true = build_kaggle_test_set(csv_path)
+    else:
+        print("\n  Using synthetic test set (pass --dataset for Kaggle CSV)")
+        events, y_true = build_synthetic_test_set()
+
+    print(f"  Total samples : {len(events)}  (attacks={y_true.sum()}, normal={len(y_true)-y_true.sum()})\n")
+
+    y_pred   = []
+    y_scores = []
+    for event in events:
+        inc = detector.detect(event)
+        y_pred.append(1 if inc is not None else 0)
+        y_scores.append(1.0 if inc is not None else 0.0)
+
+    y_pred   = np.array(y_pred)
+    y_scores = np.array(y_scores)
+
+    cm  = confusion_matrix(y_true, y_pred)
+    tn, fp, fn, tp = cm.ravel()
+
+    print("  Confusion Matrix:")
+    print(f"    True Neg  (normal, correct)  : {tn}")
+    print(f"    False Pos (normal, flagged)  : {fp}  ← false alarms")
+    print(f"    False Neg (attack, missed)   : {fn}  ← missed attacks")
+    print(f"    True Pos  (attack, caught)   : {tp}")
+
+    print("\n  Key Metrics:")
+    print(f"    Precision  : {precision_score(y_true, y_pred, zero_division=0):.4f}")
+    print(f"    Recall     : {recall_score(y_true, y_pred, zero_division=0):.4f}")
+    print(f"    F1 Score   : {f1_score(y_true, y_pred, zero_division=0):.4f}")
+    try:
+        auc = roc_auc_score(y_true, y_scores)
+        print(f"    ROC-AUC    : {auc:.4f}")
+    except ValueError:
+        print("    ROC-AUC    : N/A (only one class present in test set)")
+
+    print("\n  Full Classification Report:")
+    print(classification_report(y_true, y_pred, target_names=["normal", "attack"], zero_division=0))
+    print("=" * 60 + "\n")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", default="", help="Path to Kaggle IDS CSV for evaluation")
+    args = parser.parse_args()
+    evaluate(args.dataset or None)
