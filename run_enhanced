@@ -1,0 +1,69 @@
+"""
+run.py  –  SentinelMesh CLI monitor
+
+Usage:
+    python run.py                        # auto mode
+    python run.py --mode simulate        # simulation (no root)
+    python run.py --mode live            # live Scapy capture (needs root)
+    python run.py --mode live --iface eth0
+"""
+
+from __future__ import annotations
+
+import argparse
+import threading
+
+from packet_sniffer import PacketSnifferService
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="SentinelMesh Network Monitor")
+    p.add_argument("--mode",  choices=["auto", "live", "simulate"], default="auto")
+    p.add_argument("--iface", default="", help="Network interface for live capture")
+    p.add_argument("--max",   type=int, default=0, help="Max events (0=unlimited)")
+    return p.parse_args()
+
+
+def main() -> None:
+    args   = parse_args()
+    stop   = threading.Event()
+    svc    = PacketSnifferService(interface=args.iface or None)
+
+    mode_label = args.mode
+    if args.mode == "auto":
+        mode_label = "live" if svc.live_capture_available() else "simulate"
+
+    ifaces = svc.list_interfaces()
+    print("═" * 60)
+    print("  SentinelMesh Enhanced – Network Intrusion Detection")
+    print(f"  Mode      : {mode_label}")
+    print(f"  Interfaces: {', '.join(ifaces) or 'N/A'}")
+    print("  Press Ctrl-C to stop")
+    print("═" * 60 + "\n")
+
+    analyzed = anomalies = 0
+    try:
+        for inc in svc.monitor(mode=args.mode, max_events=args.max, stop_event=stop):
+            analyzed += 1
+            anomalies += 1
+            blocked_tag = "BLOCKED" if inc.blocked else "      "
+            mitre_tag   = f"  [{inc.mitre_tactic}]" if inc.mitre_tactic else ""
+            print(
+                f"[{inc.timestamp:%H:%M:%S}] "
+                f"{inc.severity.value:<8}  "
+                f"{inc.event.src_ip:<18} → "
+                f"{inc.event.dst_ip}:{inc.event.dst_port:<5}  "
+                f"attack={inc.attack_type.value if inc.attack_type else 'UNKNOWN':<22}  "
+                f"score={inc.anomaly_score:.4f}  "
+                f"{blocked_tag}"
+                f"{mitre_tag}"
+            )
+    except KeyboardInterrupt:
+        stop.set()
+        print("\nStopping…")
+    finally:
+        print(f"\nTotal incidents shown: {anomalies}")
+
+
+if __name__ == "__main__":
+    main()
