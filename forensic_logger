@@ -1,0 +1,145 @@
+"""
+forensic_logger.py  –  Structured logging and report generation.
+
+Every network event is written to telemetry.jsonl.
+Every incident is written to incidents.jsonl.
+Human-readable PDF/TXT security reports are generated on demand.
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Iterable
+
+from config import settings
+from models import Incident
+from utils import append_jsonl, append_text
+
+
+class ForensicLogger:
+
+    # ─── per-event logging ───────────────────────────────────────────────────
+
+    def log_telemetry(self, event: dict) -> None:
+        append_jsonl(settings.telemetry_log_path, event)
+
+    def log_incident(self, incident: Incident) -> None:
+        append_jsonl(settings.incident_log_path, incident.model_dump(mode="json"))
+
+    def log_firewall(self, message: str) -> None:
+        append_text(settings.firewall_log_path, message)
+
+    # ─── report generation ───────────────────────────────────────────────────
+
+    def generate_report(self, incidents: Iterable[Incident], hours: int = 24) -> str:
+        """
+        Generates a plain-text forensic report and returns its file path.
+        Also writes a machine-readable JSON summary alongside it.
+        """
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        filtered = [i for i in incidents if i.timestamp >= cutoff]
+
+        severity_counts  = Counter(i.severity.value for i in filtered)
+        protocol_counts  = Counter(i.event.protocol for i in filtered)
+        top_attackers    = Counter(i.event.src_ip for i in filtered).most_common(10)
+        top_targets      = Counter(i.event.dst_ip for i in filtered).most_common(5)
+        attack_patterns  = Counter(
+            i.attack_pattern for i in filtered if i.attack_pattern not in {None, "UNKNOWN"}
+        )
+        attack_types     = Counter(
+            i.attack_type.value if i.attack_type else "UNKNOWN" for i in filtered
+        )
+        geo_counts       = Counter(
+            i.geo_country for i in filtered if i.geo_country not in {None, "UNKNOWN", "PRIVATE_NET"}
+        )
+        blocked_count    = sum(1 for i in filtered if i.blocked)
+        mitre_tactics    = Counter(
+            i.mitre_tactic for i in filtered if i.mitre_tactic
+        )
+
+        report_dir = Path(settings.report_dir)
+        report_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        txt_path  = report_dir / f"security_report_{ts}.txt"
+        json_path = report_dir / f"security_report_{ts}.json"
+
+        # ── Plain-text report ────────────────────────────────────────────────
+        with txt_path.open("w", encoding="utf-8") as f:
+            w = f.write
+
+            w("╔══════════════════════════════════════════════════════════════════════╗\n")
+            w("║        SENTINELMESH  –  AI NETWORK SECURITY FORENSIC REPORT         ║\n")
+            w("╚══════════════════════════════════════════════════════════════════════╝\n\n")
+
+            w(f"  Generated  : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n")
+            w(f"  Time Range : Last {hours} hours\n")
+            w(f"  Total Incidents : {len(filtered)}\n")
+            w(f"  Auto-Blocked    : {blocked_count}\n\n")
+
+            w("── SEVERITY BREAKDOWN ────────────────────────────────────────────────\n")
+            for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+                bar = "█" * severity_counts.get(sev, 0)
+                w(f"  {sev:<8}  {severity_counts.get(sev, 0):>5}  {bar[:40]}\n")
+
+            w("\n── ATTACK TYPE CLASSIFICATION ────────────────────────────────────────\n")
+            for atype, cnt in attack_types.most_common():
+                w(f"  {atype:<28}  {cnt:>5}\n")
+
+            w("\n── MITRE ATT&CK TACTICS OBSERVED ────────────────────────────────────\n")
+            for tactic, cnt in mitre_tactics.most_common():
+                w(f"  {tactic:<42}  {cnt:>4}\n")
+
+            w("\n── PROTOCOL DISTRIBUTION ────────────────────────────────────────────\n")
+            for proto, cnt in protocol_counts.most_common():
+                w(f"  {proto:<8}  {cnt}\n")
+
+            w("\n── TOP 10 ATTACKING SOURCE IPs ──────────────────────────────────────\n")
+            for idx, (ip, cnt) in enumerate(top_attackers, 1):
+                w(f"  {idx:>2}. {ip:<18}  {cnt} alerts\n")
+
+            w("\n── TOP 5 TARGETED DESTINATION IPs ───────────────────────────────────\n")
+            for idx, (ip, cnt) in enumerate(top_targets, 1):
+                w(f"  {idx:>2}. {ip:<18}  {cnt} hits\n")
+
+            if geo_counts:
+                w("\n── GEO-ORIGIN OF ATTACKS ────────────────────────────────────────────\n")
+                for country, cnt in geo_counts.most_common(10):
+                    w(f"  {country:<24}  {cnt}\n")
+
+            if attack_patterns:
+                w("\n── DETECTED ATTACK PATTERNS ─────────────────────────────────────────\n")
+                for pattern, cnt in attack_patterns.most_common():
+                    w(f"  - {pattern}: {cnt}\n")
+
+            w("\n── RECENT CRITICAL / HIGH INCIDENTS ─────────────────────────────────\n")
+            critical = [i for i in filtered if i.severity.value in ("CRITICAL", "HIGH")][-20:]
+            for inc in reversed(critical):
+                w(
+                    f"  [{inc.timestamp:%H:%M:%S}] {inc.severity.value:<8} "
+                    f"{inc.event.src_ip} → {inc.event.dst_ip}:{inc.event.dst_port} "
+                    f"score={inc.anomaly_score:.4f} "
+                    f"blocked={'Y' if inc.blocked else 'N'}\n"
+                )
+
+            w("\n══════════════════════════════════════════════════════════════════════\n")
+            w("  End of Report\n")
+
+        # ── JSON summary (machine-readable) ──────────────────────────────────
+        import json
+        summary = {
+            "generated_at": datetime.utcnow().isoformat(),
+            "hours": hours,
+            "total_incidents": len(filtered),
+            "blocked": blocked_count,
+            "severity": dict(severity_counts),
+            "attack_types": dict(attack_types),
+            "protocols": dict(protocol_counts),
+            "top_attackers": [{"ip": ip, "count": c} for ip, c in top_attackers],
+            "geo_origins": dict(geo_counts.most_common(10)),
+            "mitre_tactics": dict(mitre_tactics),
+        }
+        json_path.write_text(json.dumps(summary, indent=2))
+
+        return str(txt_path)
