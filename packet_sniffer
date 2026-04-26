@@ -1,0 +1,262 @@
+"""
+packet_sniffer.py  –  Real-time network capture using Scapy.
+
+Requires root/admin privileges for live capture.
+Falls back to simulation mode automatically when privileges are absent
+or Scapy is unavailable (CI, sandboxed envs, etc.).
+"""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections import defaultdict, deque
+from datetime import datetime
+from typing import Callable, Generator
+
+from config import settings
+from detector import DetectorService
+from feature_extractor import FeatureExtractor
+from forensic_logger import ForensicLogger
+from models import Incident, NetworkEvent
+
+try:
+    import psutil
+    _PSUTIL = True
+except ImportError:
+    _PSUTIL = False
+
+try:
+    from scapy.all import (
+        IP, TCP, UDP, ICMP, IPv6,
+        sniff as scapy_sniff,
+        conf as scapy_conf,
+    )
+    _SCAPY = True
+except Exception:
+    _SCAPY = False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Flow aggregator  (groups raw packets into 5-second flow windows)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FlowAggregator:
+    """Accumulates per-(src_ip, dst_ip, dst_port, proto) stats over a window."""
+
+    WINDOW_SECONDS = 5
+
+    def __init__(self, on_flow: Callable[[NetworkEvent], None]) -> None:
+        self._flows: dict = defaultdict(lambda: {
+            "bytes_sent": 0, "bytes_received": 0,
+            "packet_count": 0, "duration_ms": 0,
+            "start": time.monotonic(), "flags": set(),
+        })
+        self._on_flow = on_flow
+        self._lock = threading.Lock()
+        self._flush_thread = threading.Thread(target=self._flush_loop, daemon=True)
+        self._flush_thread.start()
+
+    def add_packet(self, pkt) -> None:
+        """Called by Scapy's sniff() callback for every packet."""
+        if not (_SCAPY and IP in pkt):
+            return
+        try:
+            src_ip  = pkt[IP].src
+            dst_ip  = pkt[IP].dst
+            proto   = "UNKNOWN"
+            src_port = dst_port = 0
+            flags   = ""
+            length  = len(pkt)
+
+            if TCP in pkt:
+                proto    = "TCP"
+                src_port = int(pkt[TCP].sport)
+                dst_port = int(pkt[TCP].dport)
+                flags    = str(pkt[TCP].flags)
+            elif UDP in pkt:
+                proto    = "UDP"
+                src_port = int(pkt[UDP].sport)
+                dst_port = int(pkt[UDP].dport)
+            elif ICMP in pkt:
+                proto = "ICMP"
+
+            key = (src_ip, dst_ip, dst_port, proto)
+            with self._lock:
+                f = self._flows[key]
+                f["bytes_sent"]    += length
+                f["packet_count"]  += 1
+                elapsed = (time.monotonic() - f["start"]) * 1000
+                f["duration_ms"]    = int(elapsed)
+                if flags:
+                    f["flags"].add(flags)
+                f["src_port"]  = src_port
+                f["ttl"]       = pkt[IP].ttl
+
+        except Exception:
+            pass
+
+    def _flush_loop(self) -> None:
+        while True:
+            time.sleep(self.WINDOW_SECONDS)
+            self._emit_all()
+
+    def _emit_all(self) -> None:
+        with self._lock:
+            flows_snapshot = dict(self._flows)
+            self._flows.clear()
+
+        for (src_ip, dst_ip, dst_port, proto), stats in flows_snapshot.items():
+            if stats["packet_count"] == 0:
+                continue
+            event = NetworkEvent(
+                timestamp      = datetime.utcnow(),
+                src_ip         = src_ip,
+                dst_ip         = dst_ip,
+                protocol       = proto,
+                src_port       = stats.get("src_port", 0),
+                dst_port       = dst_port,
+                bytes_sent     = stats["bytes_sent"],
+                bytes_received = 0,        # Scapy single-direction; bidi via future eBPF
+                duration_ms    = max(1, stats["duration_ms"]),
+                packet_count   = stats["packet_count"],
+                flags          = ",".join(stats["flags"]) if stats.get("flags") else None,
+                ttl            = stats.get("ttl"),
+            )
+            self._on_flow(event)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Packet Sniffer Service
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PacketSnifferService:
+
+    def __init__(self, interface: str | None = None) -> None:
+        self.interface = interface or settings.capture_interface
+        self.extractor = FeatureExtractor()
+        self.detector  = DetectorService()
+        self.forensic  = ForensicLogger()
+        self.detector.load()
+        self._incident_queue: deque[Incident] = deque()
+
+    # ── capability checks ────────────────────────────────────────────────
+
+    @staticmethod
+    def live_capture_available() -> bool:
+        return _SCAPY
+
+    @staticmethod
+    def list_interfaces() -> list[str]:
+        if not _PSUTIL:
+            return []
+        return list(psutil.net_if_stats().keys())
+
+    # ── live capture (Scapy) ─────────────────────────────────────────────
+
+    def monitor_live(
+        self,
+        max_events: int = 0,       # 0 = unlimited
+        stop_event: threading.Event | None = None,
+    ) -> Generator[Incident, None, None]:
+        """
+        Sniff live traffic, aggregate into flows, detect anomalies.
+        Yields Incident objects in real-time.
+
+        Requires root on Linux / macOS, or WinPcap/Npcap on Windows.
+        """
+        if not _SCAPY:
+            raise RuntimeError("Scapy not installed. Run: pip install scapy")
+
+        aggregator = FlowAggregator(on_flow=self._process_event)
+        count = 0
+
+        def _packet_cb(pkt):
+            aggregator.add_packet(pkt)
+
+        # Scapy sniff in a background thread so we can yield from the queue
+        sniff_thread = threading.Thread(
+            target=scapy_sniff,
+            kwargs=dict(
+                iface=self.interface,
+                prn=_packet_cb,
+                store=False,
+                stop_filter=lambda _: (stop_event is not None and stop_event.is_set()),
+            ),
+            daemon=True,
+        )
+        sniff_thread.start()
+
+        print(f"[PacketSniffer] Live capture started on '{self.interface}'")
+        try:
+            while sniff_thread.is_alive():
+                while self._incident_queue:
+                    incident = self._incident_queue.popleft()
+                    yield incident
+                    count += 1
+                    if max_events and count >= max_events:
+                        return
+                time.sleep(0.05)
+        except KeyboardInterrupt:
+            pass
+
+    # ── simulation fallback ──────────────────────────────────────────────
+
+    def monitor_simulate(
+        self,
+        max_packets: int = 5000,
+        sleep_seconds: float = 0.15,
+    ) -> Generator[Incident, None, None]:
+        """Generate synthetic packets and detect anomalies – no root required."""
+        for _ in range(max_packets):
+            packet = self.extractor.simulated_packet()
+            event  = self.extractor.from_packet_dict(packet)
+            self.forensic.log_telemetry(event.model_dump(mode="json"))
+            incident = self.detector.detect(event)
+            if incident is not None:
+                yield incident
+            time.sleep(sleep_seconds)
+
+    # ── auto mode (tries live, falls back) ──────────────────────────────
+
+    def monitor(
+        self,
+        mode: str = "auto",
+        max_events: int = 0,
+        stop_event: threading.Event | None = None,
+    ) -> Generator[Incident, None, None]:
+        use_live = (
+            mode == "live"
+            or (mode == "auto" and self.live_capture_available())
+        )
+        if use_live:
+            try:
+                yield from self.monitor_live(max_events=max_events, stop_event=stop_event)
+                return
+            except PermissionError:
+                print("[PacketSniffer] Permission denied for live capture – falling back to simulation.")
+            except Exception as exc:
+                print(f"[PacketSniffer] Live capture error: {exc} – falling back to simulation.")
+        yield from self.monitor_simulate(max_packets=max_events or 50_000)
+
+    # ── internal ─────────────────────────────────────────────────────────
+
+    def _process_event(self, event: NetworkEvent) -> None:
+        self.forensic.log_telemetry(event.model_dump(mode="json"))
+        incident = self.detector.detect(event)
+        if incident is not None:
+            self._incident_queue.append(incident)
+
+
+if __name__ == "__main__":
+    import sys
+    iface = sys.argv[1] if len(sys.argv) > 1 else None
+    svc = PacketSnifferService(interface=iface)
+    print(f"Available interfaces: {svc.list_interfaces()}")
+    print("Starting monitor (Ctrl-C to stop)…\n")
+    for inc in svc.monitor(mode="auto"):
+        print(
+            f"[{inc.timestamp:%H:%M:%S}] {inc.severity.value:<8} "
+            f"{inc.event.src_ip} → {inc.event.dst_ip}:{inc.event.dst_port} "
+            f"attack={inc.attack_type.value}  score={inc.anomaly_score:.4f}"
+        )
