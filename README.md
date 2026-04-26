@@ -1,374 +1,177 @@
+# SentinelMesh: AI Network Security Guard
 
+SentinelMesh is a real-time, anomaly-based network defense platform designed for small teams and modern enterprises.  
+It combines adaptive AI detection, precision alerting, and controlled auto-response to reduce mean-time-to-detect (MTTD) and mean-time-to-respond (MTTR).
 
-# 🛡️ AI Network Security Guard
+## Why This Project Stands Out
 
-An AI-powered network security system that uses **Anomaly Detection** to catch Zero-Day attacks and unknown threats in real-time.
+- **Zero-day focused:** Learns normal behavior and flags unknown threats without signature updates.
+- **Human-centered security UX:** Minimal, bilingual-ready dashboard design
+- **Safe automation:** Policy-based auto-blocking with whitelists, cooldown windows, and explainable evidence.
+- **Forensic-first design:** Structured event logs and timeline-ready evidence for post-incident analysis.
+- **Production-minded architecture:** API-first, modular services, typed schemas, and extensible detection pipeline.
 
-## 🌟 What It Does
+## Target Users
 
-Instead of relying on signature-based detection (like a "Most Wanted" list), this system:
-- **Learns** what normal network behavior looks like
-- **Monitors** your live network traffic in real-time
-- **Detects** suspicious activity that deviates from the baseline
-- **Alerts** you instantly through a beautiful dashboard
+- **SMB Security Teams:** Need practical defense without large SOC budgets.
+- **IT Admins / SREs:** Need low-noise alerts and fast triage during incidents.
+- **University Labs / R&D Networks:** Need anomaly detection against unknown traffic patterns.
+  
 
-This means it can catch **brand new attacks** that have never been seen before!
+## Core Problem and Solution
 
----
+**Problem:** Traditional signature-based tools miss novel attacks and overwhelm teams with noisy alerts.  
+**Solution:** SentinelMesh uses unsupervised anomaly detection with explainable scoring, real-time alert orchestration, and optional firewall response to stop suspicious activity fast and safely.
 
-## 🏗️ System Architecture
+## Global-Grade Product Design (Minimal + Precise)
 
+- **Layout:** Left nav, top status strip, right-side detail drawer for selected incident.
+- **Views:** Live feed, Incident timeline, Blocked IPs, Investigation detail, Policy settings.
+- **Design language:** Neutral palette, subtle color semantics, high information density with low cognitive load.
+- **Interaction principles:**
+  - One primary action per screen.
+  - Alert cards prioritize `severity`, `confidence`, and `recommended action`.
+  - Keyboard-friendly operations for analyst workflows.
+- **Localization readiness:** Content keys and date/number formatting prepared for i18n.
+
+## Recommended Tech Stack
+
+- **Frontend:** Next.js (TypeScript), Tailwind CSS, Recharts, TanStack Query
+- **Backend API:** FastAPI + Pydantic + Uvicorn
+- **Streaming/Event Bus:** Redis Streams (or Kafka in advanced setup)
+- **Database:** PostgreSQL (incidents, policies), TimescaleDB extension for event metrics
+- **AI/ML:** scikit-learn (IsolationForest), pandas, numpy
+- **Packet Capture:** PyShark / Scapy
+- **Background Jobs:** Celery + Redis (alerts, reports, cleanup)
+- **Ops:** Docker Compose, Prometheus, Grafana, GitHub Actions
+
+## Suggested Folder Structure
+
+```text
+sentinelmesh/
+  backend/
+    app/
+      api/
+      core/
+      detection/
+      capture/
+      response/
+      schemas/
+      services/
+      db/
+    tests/
+  frontend/
+    src/
+      app/
+      components/
+      features/
+      lib/
+  infra/
+    docker/
+    k8s/
+  docs/
+    architecture.md
+    threat-model.md
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    AI SECURITY GUARD                        │
-└─────────────────────────────────────────────────────────────┘
 
-1. CONFIGURATION (config.py)
-   ├── Centralized settings
-   ├── Model parameters
-   ├── Network settings
-   └── Notification configuration
+## System Flow
 
-2. TRAINING PHASE (train_model.py)
-   ├── Download NSL-KDD dataset
-   ├── Extract "normal" network patterns
-   ├── Train Isolation Forest AI
-   └── Save trained model
+1. **Capture:** Packet/flow metadata is ingested from network interfaces.
+2. **Feature Engineering:** Extract protocol, byte, time-window, host behavior features.
+3. **Detection:** IsolationForest generates anomaly score and label.
+4. **Correlation:** Events deduplicated + grouped by source/attack pattern.
+5. **Decision Engine:** Rule policy decides alerting and optional auto-block.
+6. **Notification:** Telegram/Email/Slack/SMS based on severity policy.
+7. **Persistence + Dashboard:** Incident data stored and visualized in real time.
 
-3. FEATURE EXTRACTION (feature_extractor.py)
-   ├── Advanced packet analysis
-   ├── Connection tracking
-   ├── Time-based features
-   └── Host-based statistics
+## MVP Features
 
-4. MONITORING PHASE (packet_sniffer.py)
-   ├── Capture live packets with PyShark
-   ├── Extract network features
-   ├── Compare against learned baseline
-   └── Flag anomalies
+- Real-time network anomaly detection
+- Severity scoring and explainable alert context
+- Live incident feed (API + dashboard)
+- Basic policy engine (threshold + cooldown + whitelist)
+- Telegram/email alert integration
+- Incident logging and CSV/JSON export
 
-5. ALERT MANAGEMENT (alert_manager.py)
-   ├── Alert deduplication
-   ├── Attack pattern correlation
-   ├── Multi-channel notifications
-   └── Risk analysis
+## Advanced Features (Recruiter-Wow)
 
-6. UTILITIES (utils.py)
-   ├── Logging system
-   ├── Email/Slack alerts
-   ├── Model save/load
-   └── Report generation
+- eBPF-based telemetry collector (Linux)
+- Hybrid detection (IsolationForest + rules + sequence model)
+- Risk scoring with MITRE ATT&CK tactic mapping
+- Adaptive thresholds by time-of-day baseline
+- Multi-tenant architecture with RBAC
+- SOAR-style playbooks (block, isolate, ticket, notify)
+- Japanese/English UI localization
+- Security scorecard and executive weekly report generator
 
-7. EVALUATION (model_evaluator.py)
-   ├── Model performance testing
-   ├── Attack type analysis
-   ├── Accuracy metrics
-   └── Evaluation reports
+## Implementation Roadmap
 
-8. VISUALIZATION (dashboard.py)
-   ├── Real-time Streamlit dashboard
-   ├── Alert timeline & severity breakdown
-   ├── Protocol analysis
-   └── Live statistics
-```
+### Phase 1 - Foundation (Week 1)
+- Define data schema, config, and service boundaries
+- Build packet feature pipeline
+- Train baseline model and evaluation script
 
----
+### Phase 2 - Detection Core (Week 2)
+- Real-time detector loop
+- Incident object generation
+- Rule policy engine for severity and escalation
 
-## 📋 Prerequisites
+### Phase 3 - Product Layer (Week 3)
+- FastAPI endpoints (`/health`, `/incidents`, `/metrics`)
+- Streamlit or Next.js dashboard prototype
+- Alert integration (Telegram/email) and retries
 
-### Required Software
-- **Python 3.8+**
-- **Wireshark/TShark** (for PyShark to work)
-  - Windows: Download from https://www.wireshark.org/
-  - Mac: `brew install wireshark`
-  - Linux: `sudo apt-get install tshark`
+### Phase 4 - Reliability (Week 4)
+- Docker setup, structured logs, tests
+- CI pipeline, linting, formatting
+- Documentation, demo scenarios, performance tuning
 
-### System Permissions
-- **Administrator/Root access** for packet capture
-- Network interface access
+### Phase 5 - Portfolio Polish (Week 5)
+- Add architecture diagrams and benchmark metrics
+- Record short product demo video
+- Publish results and impact narrative
 
----
+## Starter Modules Included
 
-## 🚀 Installation
+- `security_config.py` - centralized settings
+- `models.py` - typed domain models
+- `detector.py` - anomaly detector service
+- `alerting.py` - notification + policy control
+- `trainer.py` - baseline model training
+- `api_server.py` - FastAPI endpoints
+- `dashboard.py` - Streamlit monitoring view
 
-### Step 1: Install Dependencies
+
+## Quick Start
 
 ```bash
 pip install -r requirements.txt
-```
-
-### Step 2: Verify TShark Installation
-
-```bash
-# Check if tshark is installed
-tshark --version
-```
-
-If not found, install Wireshark (includes TShark).
-
----
-
-## 💻 Usage
-
-### Phase 1: Train the AI Brain 🧠
-
-First, train the model to learn what "normal" network traffic looks like:
-
-```bash
-python train_model.py
-```
-
-**What happens:**
-- Downloads NSL-KDD dataset (~5MB)
-- Analyzes thousands of normal network connections
-- Trains Isolation Forest model
-- Saves model to disk
-
-**Output files:**
-- `anomaly_model.pkl` - Trained AI model
-- `scaler.pkl` - Feature normalization
-- `features.pkl` - Feature list
-
-**Duration:** 2-5 minutes
-
----
-
-### Phase 2: Monitor Network (Option A - Command Line) 👁️
-
-Run the packet sniffer to monitor your network:
-
-```bash
-# Windows (Run as Administrator)
-python packet_sniffer.py
-
-# Linux/Mac (Run with sudo)
-sudo python packet_sniffer.py
-```
-
-**Important:** Change the network interface in `packet_sniffer.py`:
-```python
-interface = 'Wi-Fi'  # Change to your interface name
-```
-
-**Finding your interface:**
-- Windows: `ipconfig` → Look for your active adapter
-- Mac: `ifconfig` → Usually `en0` or `en1`
-- Linux: `ip addr` → Usually `eth0` or `wlan0`
-
----
-
-### Phase 3: Launch Dashboard (Option B - Visual) 📊
-
-For a beautiful real-time visualization:
-
-```bash
-# Windows (Run as Administrator)
+python trainer.py
+uvicorn api_server:app --reload
 streamlit run dashboard.py
-
-# Linux/Mac (Run with sudo)
-sudo streamlit run dashboard.py
 ```
 
-**Dashboard features:**
-- 🚨 Real-time anomaly alerts
-- 📈 Severity breakdown (Critical/High/Medium/Low)
-- 🌐 Protocol distribution
-- ⏱️ Alert timeline
-- 📊 Live statistics
+## Enhanced Runtime
 
-**Access:** Opens automatically at `http://localhost:8501`
-
----
-
-## 🎯 How It Works
-
-### 1. Learning Phase
-```python
-Normal Traffic Pattern → Isolation Forest → Learned Baseline
+```bash
+pip install -r requirements_enhanced.txt
+python trainer.py
+python run_enhanced.py
+uvicorn api_server:app --reload
+streamlit run dashboard.py
+python model_evaluator.py
 ```
 
-The AI studies features like:
-- Packet duration
-- Source/destination bytes
-- Connection counts
-- Error rates
-- Service patterns
+### Enhanced Modules
 
-### 2. Detection Phase
-```python
-Live Packet → Feature Extraction → Compare to Baseline → Anomaly Score
-```
-
-If the score indicates deviation from normal:
-- ✅ **Score > -0.1**: Normal traffic
-- ⚠️ **Score -0.1 to -0.3**: Low/Medium severity
-- 🚨 **Score < -0.5**: Critical anomaly!
-
-### 3. Alert Classification
-
-| Severity | Score Range | Meaning |
-|----------|-------------|---------|
-| 🟢 LOW | -0.1 to 0 | Slight deviation |
-| 🟡 MEDIUM | -0.3 to -0.1 | Notable anomaly |
-| 🟠 HIGH | -0.5 to -0.3 | Serious threat |
-| 🔴 CRITICAL | < -0.5 | Immediate action |
+- `config_enhanced.py`: production-style config for firewall, notifications, and reports
+- `packet_sniffer.py`: simulation + optional live PyShark capture
+- `alert_manager_enhanced.py`: correlation, pattern tagging, multi-channel alerts, auto-block
+- `firewall_manager.py`: block/unblock lifecycle and expiry handling
+- `forensic_logger.py`: telemetry/incident logs + report generation
+- `model_evaluator.py`: baseline model quality report
+- `run_enhanced.py`: CLI monitoring entrypoint
 
 ---
 
-## 📊 Understanding the Output
-
-### Command Line Output:
-```
-👁️  Starting network monitoring on Wi-Fi...
-🔍 Press Ctrl+C to stop
-
-📊 Analyzed: 10 packets | 🚨 Anomalies: 0
-📊 Analyzed: 20 packets | 🚨 Anomalies: 1
-
-🚨 ANOMALY DETECTED!
-   Time: 14:23:45
-   Protocol: TCP
-   Source: 192.168.1.105
-   Destination: 203.0.113.42
-   Severity: HIGH
-   Score: -0.42
-```
-
-### Dashboard Display:
-- **Alert Table**: Recent anomalies with full details
-- **Severity Pie Chart**: Distribution of threat levels
-- **Protocol Bar Chart**: Which protocols are suspicious
-- **Timeline Graph**: When anomalies occurred
-
----
-
-## 🔧 Customization
-
-### Adjust Sensitivity
-
-In `train_model.py`, modify contamination:
-```python
-model = IsolationForest(
-    contamination=0.01,  # 1% expected anomalies (strict)
-    # contamination=0.05  # 5% (more lenient)
-)
-```
-
-### Monitor Specific Ports
-
-In `packet_sniffer.py`:
-```python
-capture = pyshark.LiveCapture(
-    interface=self.interface,
-    bpf_filter='port 80 or port 443'  # Only HTTP/HTTPS
-)
-```
-
-### Change Alert Thresholds
-
-In `packet_sniffer.py`:
-```python
-def _calculate_severity(self, score):
-    if score < -0.4:  # Adjust these thresholds
-        return 'CRITICAL'
-    elif score < -0.2:
-        return 'HIGH'
-    # ...
-```
-
----
-
-## 🐛 Troubleshooting
-
-### "Permission Denied" Error
-**Solution:** Run with administrator/sudo privileges
-
-### "Interface not found"
-**Solution:** 
-1. List available interfaces: `tshark -D`
-2. Update interface name in code
-
-### "Model not found"
-**Solution:** Run `train_model.py` first
-
-### PyShark not capturing packets
-**Solution:**
-1. Verify TShark installation: `tshark --version`
-2. Check firewall settings
-3. Ensure interface is active
-
-### Dashboard not showing alerts
-**Solution:** 
-1. Enable "Demo Mode" to test visualization
-2. Check if model files exist
-3. Verify network traffic is flowing
-
----
-
-## 🎓 What Makes This Special?
-
-### Traditional Security (Signature-Based)
-- ❌ Needs to know the attack beforehand
-- ❌ Can't catch new/unknown threats
-- ❌ Constantly needs updates
-
-### This AI System (Anomaly-Based)
-- ✅ Learns normal behavior automatically
-- ✅ Detects unknown/Zero-Day attacks
-- ✅ Adapts to your network patterns
-
----
-
-## 📚 Technical Details
-
-### Model: Isolation Forest
-- **Type:** Unsupervised anomaly detection
-- **How it works:** Isolates anomalies by random partitioning
-- **Why it's good:** Fast, effective for high-dimensional data
-
-### Dataset: NSL-KDD
-- **Purpose:** Network intrusion detection benchmark
-- **Size:** ~125,000 connections
-- **Labels:** Normal + various attack types
-
-### Features Used:
-- Duration, byte counts, connection counts
-- Error rates, service patterns
-- Host-based statistics
-
----
-
-## 🚀 Future Enhancements
-
-Want to make it even better? Consider:
-- **Deep Learning**: Use LSTM/Autoencoders for sequence analysis
-- **Multi-stage Detection**: Combine with signature-based detection
-- **Automatic Response**: Block suspicious IPs automatically
-- **Historical Analysis**: Store and analyze long-term patterns
-
----
-
-## 📝 License
-
-This project is for educational purposes. Use responsibly and ensure you have permission to monitor network traffic.
-
----
-
-## 🙋 Support
-
-Having issues? Common fixes:
-1. Always run with admin/sudo privileges
-2. Ensure TShark is installed
-3. Train the model before monitoring
-4. Check your network interface name
-
----
-
-## 🎉 You Did It!
-
-You now have an AI-powered security guard watching your network 24/7, catching threats that traditional systems would miss!
-
-**Next Steps:**
-1. Train the model: `python train_model.py`
-2. Start monitoring: `streamlit run dashboard_realtime.py`
-3. Watch the alerts roll in! 🛡️
+Built for high signal, low noise, and real-world incident response.
