@@ -1,0 +1,115 @@
+"""
+firewall_manager.py  –  Policy-based IP blocking with optional OS-level enforcement.
+
+By default runs in SAFE/MOCK mode (logs only).
+Set FIREWALL_ENFORCE=true in .env to attempt real OS firewall calls.
+
+Linux   → iptables  (requires root)
+Windows → netsh advfirewall  (requires admin)
+macOS   → pfctl (requires root)
+"""
+
+from __future__ import annotations
+
+import platform
+import subprocess
+import shlex
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Dict
+
+from config import settings
+from utils import append_text
+
+
+class FirewallManager:
+
+    def __init__(self, enforce: bool = False) -> None:
+        self.blocked_ips: Dict[str, datetime] = {}
+        self.os_name = platform.system().lower()   # "linux" | "windows" | "darwin"
+        self.enforce = enforce                      # True = real firewall commands
+
+    # ─── public API ─────────────────────────────────────────────────────────
+
+    def block_ip(self, ip: str, reason: str = "") -> dict:
+        expires = datetime.utcnow() + timedelta(minutes=settings.block_duration_minutes)
+        self.blocked_ips[ip] = expires
+        append_text(
+            settings.firewall_log_path,
+            f"BLOCK ip={ip} reason={reason} expires={expires.isoformat()} enforce={self.enforce}",
+        )
+        if self.enforce:
+            self._os_block(ip)
+        return {"ip": ip, "blocked": True, "expires_at": expires.isoformat(), "platform": self.os_name}
+
+    def unblock_ip(self, ip: str) -> bool:
+        if ip not in self.blocked_ips:
+            return False
+        del self.blocked_ips[ip]
+        append_text(settings.firewall_log_path, f"UNBLOCK ip={ip}")
+        if self.enforce:
+            self._os_unblock(ip)
+        return True
+
+    def cleanup_expired(self) -> int:
+        now = datetime.utcnow()
+        expired = [ip for ip, exp in self.blocked_ips.items() if exp <= now]
+        for ip in expired:
+            self.unblock_ip(ip)
+        return len(expired)
+
+    def list_blocked(self) -> list[dict]:
+        self.cleanup_expired()
+        return [
+            {"ip": ip, "expires_at": exp.isoformat()}
+            for ip, exp in self.blocked_ips.items()
+        ]
+
+    def is_blocked(self, ip: str) -> bool:
+        self.cleanup_expired()
+        return ip in self.blocked_ips
+
+    # ─── OS-level commands (best-effort) ────────────────────────────────────
+
+    def _os_block(self, ip: str) -> None:
+        try:
+            if self.os_name == "linux":
+                subprocess.run(
+                    shlex.split(f"iptables -I INPUT -s {ip} -j DROP"),
+                    check=True, capture_output=True, timeout=5,
+                )
+            elif self.os_name == "windows":
+                subprocess.run(
+                    [
+                        "netsh", "advfirewall", "firewall", "add", "rule",
+                        f"name=SentinelMesh_BLOCK_{ip}",
+                        "dir=in", "action=block", f"remoteip={ip}",
+                    ],
+                    check=True, capture_output=True, timeout=5,
+                )
+            elif self.os_name == "darwin":
+                # macOS pf — requires pfctl -e to be active
+                Path("/etc/pf.anchors/sentinelmesh").parent.mkdir(parents=True, exist_ok=True)
+                with open("/etc/pf.anchors/sentinelmesh", "a") as pf:
+                    pf.write(f"block drop in quick from {ip} to any\n")
+                subprocess.run(["pfctl", "-f", "/etc/pf.conf"], capture_output=True, timeout=5)
+        except Exception as exc:
+            append_text(settings.firewall_log_path, f"OS_BLOCK_FAILED ip={ip} err={exc}")
+
+    def _os_unblock(self, ip: str) -> None:
+        try:
+            if self.os_name == "linux":
+                subprocess.run(
+                    shlex.split(f"iptables -D INPUT -s {ip} -j DROP"),
+                    check=True, capture_output=True, timeout=5,
+                )
+            elif self.os_name == "windows":
+                subprocess.run(
+                    [
+                        "netsh", "advfirewall", "firewall", "delete", "rule",
+                        f"name=SentinelMesh_BLOCK_{ip}",
+                    ],
+                    check=True, capture_output=True, timeout=5,
+                )
+        except Exception as exc:
+            append_text(settings.firewall_log_path, f"OS_UNBLOCK_FAILED ip={ip} err={exc}")
