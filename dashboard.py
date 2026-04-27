@@ -183,7 +183,7 @@ with st.sidebar:
     cap_active = health.get("capture_active", False)
 
     st.markdown(f"{status_dot} API: **{'Online' if health.get('status')=='ok' else 'Offline'}**")
-    st.markdown(f"🧠 Model: **{model_src}**")
+   
     st.markdown(f"⏱ Uptime: **{uptime}s**")
     st.markdown(f"📡 Capture: **{'ON' if cap_active else 'OFF'}**")
     st.markdown("---")
